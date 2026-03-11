@@ -1,0 +1,28 @@
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Databases / local runtime
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Logs
+*.log
+
+# Frontend build output
+web/node_modules/
+web/.next/
+web/out/
+
+# Coverage / temp
+coverage/
+tmp/
+

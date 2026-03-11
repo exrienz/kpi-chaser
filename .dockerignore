@@ -1,0 +1,13 @@
+.git
+.gitignore
+.DS_Store
+.idea
+.vscode
+*.db
+*.sqlite
+*.sqlite3
+web/node_modules
+web/.next
+README.md
+AGENTS.md
+

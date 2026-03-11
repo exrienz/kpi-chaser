@@ -1,0 +1,803 @@
+Below is a **production-ready system blueprint** designed for:
+
+* **Self-hosted personal edge devices** (NAS / Raspberry Pi / mini PC)
+* **Multi-user**
+* **Email + password auth**
+* **AI provider abstraction (OpenRouter compatible)**
+* **No external integrations**
+* **Docker deploy**
+* **Go backend modular monolith**
+* **Minimal resource usage**
+
+This is intentionally optimized for **home server / edge deployments**.
+
+---
+
+# KPI Journal â�� Production System Blueprint
+
+**Core Concept**
+
+```
+Daily Work Logs
+        â��
+        â�¼
+AI Enhancement + KPI Mapping
+        â��
+        â�¼
+Structured Achievement Records
+        â��
+        â�¼
+Quarterly KPI Report Generator
+```
+
+---
+
+# 1. Clarifying Questions
+
+Before implementation, a few design decisions should be confirmed:
+
+1. Should **AI requests run synchronously** or via **background workers**?
+2. Should users be able to **edit AI enhanced text** before saving?
+3. Should KPI mapping be **AI only** or allow **manual override**?
+4. Will attachments (screenshots) be part of **MVP**?
+5. Should the system support **multiple AI providers** or just **OpenRouter-compatible APIs**?
+
+For this blueprint I assume **AI via OpenRouter but provider-agnostic**.
+
+---
+
+# 2. Assumptions
+
+Assumptions for MVP:
+
+* Self-hosted deployment
+* Multi-user (small team or personal instance)
+* Email + password authentication
+* No external integrations
+* AI provider configurable (OpenRouter compatible)
+* Storage requirements small
+* AI calls asynchronous
+* SQLite database (edge optimized)
+* Screenshot logging optional but supported
+
+Hardware assumption:
+
+```
+CPU: 2 cores
+RAM: 2GB
+Storage: <1GB
+```
+
+---
+
+# 3. System Architecture Overview
+
+We use a **modular monolith**.
+
+Why:
+
+* Simpler deployment
+* Lower memory footprint
+* Easy migration to microservices later
+
+Main components:
+
+### Web UI
+
+Simple SPA.
+
+Responsibilities:
+
+* logging achievements
+* viewing KPI progress
+* generating reports
+
+### API Server (Go)
+
+Handles:
+
+* auth
+* KPI management
+* achievement logging
+* AI requests
+* reporting
+
+### Worker
+
+Background jobs:
+
+* AI rewriting
+* KPI classification
+* report generation
+
+### SQLite Database
+
+Stores:
+
+* users
+* kpis
+* achievements
+* ai outputs
+* reports
+
+### AI Provider Layer
+
+Adapter supporting:
+
+* OpenRouter
+* OpenAI-compatible APIs
+
+---
+
+# 4. Architecture Diagram
+
+```
+                Browser
+                   â��
+                   â�¼
+              Web Frontend
+                   â��
+                   â�¼
+                Go API
+                   â��
+     â��â��â��â��â��â��â��â��â��â��â��â��â��â��â�¼â��â��â��â��â��â��â��â��â��â��â��â��â��â��
+     â�¼             â�¼             â�¼
+ Auth Module   KPI Module   Achievement Module
+                                   â��
+                                   â�¼
+                              AI Job Queue
+                                   â��
+                                   â�¼
+                              Worker Pool
+                                   â��
+                                   â�¼
+                            AI Provider Client
+                                   â��
+                                   â�¼
+                               SQLite DB
+```
+
+---
+
+# 5. Repository / Monorepo Structure
+
+```
+kpi-journal/
+
+â��â��â�� cmd/
+â��   â��â��â�� api-server/
+â��   â��     main.go
+â��   â��
+â��   â��â��â�� worker/
+â��         main.go
+â��
+â��â��â�� internal/
+â��
+â��   â��â��â�� auth/
+â��   â��     handler.go
+â��   â��     service.go
+â��   â��     repository.go
+â��   â��
+â��   â��â��â�� users/
+â��   â��     service.go
+â��   â��
+â��   â��â��â�� kpi/
+â��   â��     handler.go
+â��   â��     service.go
+â��   â��     repository.go
+â��   â��
+â��   â��â��â�� achievements/
+â��   â��     handler.go
+â��   â��     service.go
+â��   â��     repository.go
+â��   â��
+â��   â��â��â�� ai/
+â��   â��     provider.go
+â��   â��     openrouter.go
+â��   â��     prompts.go
+â��   â��
+â��   â��â��â�� reports/
+â��   â��     generator.go
+â��   â��
+â��   â��â��â�� jobs/
+â��   â��     queue.go
+â��   â��     worker.go
+â��   â��     ai_enhance_job.go
+â��   â��     kpi_mapping_job.go
+â��   â��
+â��   â��â��â�� storage/
+â��   â��     sqlite.go
+â��   â��     migrations.go
+â��   â��
+â��   â��â��â�� config/
+â��         config.go
+â��
+â��â��â�� pkg/
+â��   â��â��â�� ai_client/
+â��   â��â��â�� auth_token/
+â��
+â��â��â�� web/
+â��   â��â��â�� app/
+â��   â��â��â�� components/
+â��   â��â��â�� api/
+â��
+â��â��â�� migrations/
+â��   â��â��â�� 001_users.sql
+â��   â��â��â�� 002_kpis.sql
+â��   â��â��â�� 003_achievements.sql
+â��   â��â��â�� 004_reports.sql
+â��
+â��â��â�� docker/
+â��   â��â��â�� Dockerfile
+â��
+â��â��â�� docker-compose.yml
+â��
+â��â��â�� README.md
+```
+
+### Directory Purpose
+
+| Folder     | Purpose                 |
+| ---------- | ----------------------- |
+| cmd        | application entrypoints |
+| internal   | business logic          |
+| pkg        | reusable utilities      |
+| web        | frontend                |
+| jobs       | background processing   |
+| storage    | database layer          |
+| migrations | schema management       |
+
+---
+
+# 6. Core Components
+
+---
+
+# API Layer
+
+Framework:
+
+```
+net/http + chi router
+```
+
+Reasons:
+
+* lightweight
+* fast
+* minimal dependencies
+
+Example routes:
+
+```
+POST   /auth/register
+POST   /auth/login
+
+GET    /kpis
+POST   /kpis
+PUT    /kpis/:id
+
+POST   /achievements
+GET    /achievements
+
+POST   /achievements/:id/enhance
+
+POST   /reports/generate
+GET    /reports/:quarter
+```
+
+---
+
+# Auth System
+
+Email/password authentication.
+
+Password hashing:
+
+```
+bcrypt
+```
+
+Session strategy:
+
+```
+JWT access token
+```
+
+Stored in:
+
+```
+Authorization: Bearer
+```
+
+---
+
+# Achievement Service
+
+Handles:
+
+* daily log creation
+* AI enhancement
+* KPI tagging
+
+Example structure:
+
+```
+type Achievement struct {
+    ID
+    UserID
+    RawText
+    EnhancedText
+    Category
+    KPITargetID
+    CreatedAt
+}
+```
+
+---
+
+# AI Provider Abstraction
+
+Supports OpenRouter compatible APIs.
+
+Interface:
+
+```go
+type Provider interface {
+    EnhanceAchievement(ctx context.Context, text string) (string, error)
+    MapKPI(ctx context.Context, text string, kpis []KPI) (string, error)
+}
+```
+
+Implementation:
+
+```
+internal/ai/openrouter.go
+```
+
+---
+
+# Job Queue
+
+Edge devices shouldn't run Redis.
+
+Use **SQLite-backed job queue**.
+
+Table:
+
+```
+jobs
+```
+
+Worker polls:
+
+```
+SELECT * FROM jobs WHERE status = 'pending'
+```
+
+Types:
+
+```
+ai_enhance
+kpi_mapping
+report_generation
+```
+
+---
+
+# Worker Pool
+
+Worker model:
+
+```
+goroutine worker pool
+```
+
+Example:
+
+```
+5 concurrent workers
+```
+
+---
+
+# Report Generator
+
+Builds:
+
+```
+Quarter KPI Summary
+```
+
+Example output:
+
+```
+KPI: Improve system security posture
+
+Achievements:
+â�¢ Conducted firewall policy review removing 14 obsolete rules
+â�¢ Investigated suspicious outbound traffic event
+
+Impact:
+Improved security posture and reduced network attack surface.
+```
+
+Export formats:
+
+* Markdown
+* DOCX
+* Clipboard
+
+DOCX generation using:
+
+```
+gooxml
+```
+
+---
+
+# 7. Data Model Strategy
+
+Database:
+
+```
+SQLite
+```
+
+Reasons:
+
+* edge optimized
+* zero config
+* reliable
+
+---
+
+## users
+
+```
+users
+-----
+
+id
+email
+password_hash
+created_at
+```
+
+---
+
+## kpis
+
+```
+kpis
+-----
+
+id
+user_id
+title
+description
+weight
+quarter
+year
+created_at
+```
+
+---
+
+## achievements
+
+```
+achievements
+------------
+
+id
+user_id
+raw_text
+enhanced_text
+category
+kpi_id
+created_at
+```
+
+---
+
+## jobs
+
+```
+jobs
+-----
+
+id
+type
+payload
+status
+created_at
+```
+
+---
+
+## reports
+
+```
+reports
+-------
+
+id
+user_id
+quarter
+year
+content
+created_at
+```
+
+---
+
+# 8. Concurrency Strategy (Go)
+
+Workers implemented with **goroutines + channels**.
+
+Example worker pool:
+
+```
+jobs channel
+     â��
+ â��â��â��â��â�¼â��â��â��â��â��
+ â�¼   â�¼    â�¼
+W1  W2   W3
+```
+
+Pseudo code:
+
+```go
+func StartWorkers(n int, jobs <-chan Job) {
+    for i := 0; i < n; i++ {
+        go worker(jobs)
+    }
+}
+```
+
+Backpressure:
+
+```
+queue size limited
+```
+
+Rate limiting for AI calls:
+
+```
+golang.org/x/time/rate
+```
+
+---
+
+# 9. Deployment Layout
+
+Docker compose:
+
+```
+version: "3"
+
+services:
+
+  api:
+    build: .
+    command: api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+
+  worker:
+    build: .
+    command: worker
+    volumes:
+      - ./data:/data
+```
+
+Single SQLite file:
+
+```
+/data/app.db
+```
+
+---
+
+# Dockerfile
+
+```
+FROM golang:1.23-alpine
+
+WORKDIR /app
+
+COPY . .
+
+RUN go build -o app ./cmd/api-server
+
+CMD ["./app"]
+```
+
+---
+
+# 10. Performance Strategy
+
+Designed for **low resource systems**.
+
+Key decisions:
+
+### SQLite WAL mode
+
+```
+PRAGMA journal_mode=WAL;
+```
+
+### AI jobs async
+
+Prevents UI blocking.
+
+### Worker pool
+
+Prevents CPU spikes.
+
+### DB connection pool
+
+```
+max_open = 5
+```
+
+### JSON minimal payloads
+
+Small API responses.
+
+---
+
+# 11. Security Strategy
+
+Authentication:
+
+```
+bcrypt password hashing
+```
+
+JWT expiration:
+
+```
+24 hours
+```
+
+API protection:
+
+```
+rate limiting
+```
+
+Secrets:
+
+```
+AI_API_KEY
+JWT_SECRET
+```
+
+Stored in:
+
+```
+.env
+```
+
+Network exposure:
+
+```
+localhost only
+or reverse proxy
+```
+
+Recommended:
+
+```
+Caddy / Traefik
+```
+
+---
+
+# 12. Scaling & Evolution
+
+If the app grows:
+
+Split services:
+
+```
+auth-service
+achievement-service
+ai-service
+report-service
+```
+
+Queue upgrade:
+
+```
+SQLite queue â�� NATS / Redis
+```
+
+Database upgrade:
+
+```
+SQLite â�� PostgreSQL
+```
+
+AI service scaling:
+
+```
+dedicated worker nodes
+```
+
+---
+
+# Example API Flow
+
+User logs achievement:
+
+```
+POST /achievements
+```
+
+Payload:
+
+```
+{
+ "text": "Reviewed firewall rules and removed unused policies"
+}
+```
+
+Worker pipeline:
+
+```
+Achievement Created
+        â��
+        â�¼
+AI Enhance Job
+        â��
+        â�¼
+KPI Mapping Job
+```
+
+Final stored entry:
+
+```
+Conducted firewall policy review and removed 14 obsolete rules, improving network security posture.
+```
+
+---
+
+# Optional Advanced Features
+
+Future modules:
+
+```
+voice logging
+screenshot OCR
+achievement heatmap
+career timeline
+AI KPI progress estimation
+```
+
+---
+
+# Estimated Resource Usage
+
+Edge device footprint:
+
+```
+RAM: ~150MB
+CPU idle: <1%
+Disk: <200MB
+```
+
+Works on:
+
+```
+Raspberry Pi 4
+Synology NAS
+Intel NUC
+Mini PC
+```
+
+
