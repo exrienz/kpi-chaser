@@ -1,8 +1,30 @@
 "use client";
 
-import { FormEvent, useEffect, useState, useTransition } from "react";
+import { CSSProperties, FormEvent, ReactNode, useEffect, useMemo, useState, useTransition } from "react";
 
-import { Achievement, apiFetch, APIError, DashboardSummary, KPI, Report } from "../lib/api";
+import {
+  Achievement,
+  APIError,
+  DashboardSummary,
+  KPI,
+  Report,
+  apiFetch,
+  createAchievement,
+  createKPI,
+  createSubKPI,
+  deleteAchievement,
+  deleteKPI,
+  enhanceAchievement,
+  generateReport,
+  getDashboardSummary,
+  getReport,
+  listAchievements,
+  listKPIHierarchy,
+  listKPIs,
+  updateAchievement,
+  updateKPI,
+  updateKPIProgress,
+} from "../lib/api";
 import { formatReport, ReportFormat } from "../lib/reportFormats";
 
 type AuthResponse = {
@@ -10,6 +32,15 @@ type AuthResponse = {
   user: {
     email: string;
   };
+};
+
+type QuarterKey = "progressQ1" | "progressQ2" | "progressQ3" | "progressQ4";
+
+type ProgressDraft = {
+  progressQ1: number;
+  progressQ2: number;
+  progressQ3: number;
+  progressQ4: number;
 };
 
 const demoKPIs: KPI[] = [
@@ -20,6 +51,12 @@ const demoKPIs: KPI[] = [
     description: "Reduce attack surface and tighten control coverage.",
     weight: 40,
     targetMetric: "Complete 3 hardening initiatives",
+    parentKpiId: null,
+    progressQ1: 55,
+    progressQ2: 50,
+    progressQ3: 45,
+    progressQ4: 60,
+    annualProgress: 52,
   },
   {
     id: 2,
@@ -28,6 +65,37 @@ const demoKPIs: KPI[] = [
     description: "Convert recurring manual tasks into scripts.",
     weight: 35,
     targetMetric: "Save 8 team hours per month",
+    parentKpiId: null,
+    progressQ1: 35,
+    progressQ2: 40,
+    progressQ3: 45,
+    progressQ4: 50,
+    annualProgress: 42,
+  },
+  {
+    id: 3,
+    quarter: "2026-Q1",
+    title: "Firewall hardening",
+    description: "Improve inbound and outbound rule hygiene.",
+    weight: 20,
+    targetMetric: "Remove obsolete policies",
+    parentKpiId: 1,
+    progressQ1: 65,
+    progressQ2: 60,
+    progressQ3: 55,
+    progressQ4: 60,
+    annualProgress: 60,
+  },
+];
+
+const demoHierarchy: KPI[] = [
+  {
+    ...demoKPIs[0],
+    children: [{ ...demoKPIs[2] }],
+  },
+  {
+    ...demoKPIs[1],
+    children: [],
   },
 ];
 
@@ -41,6 +109,7 @@ const demoAchievements: Achievement[] = [
     category: "Process Improvement",
     impactNote: "Reduced unnecessary exposure across edge-facing services.",
     status: "enhanced",
+    kpiId: 3,
   },
   {
     id: 2,
@@ -51,6 +120,7 @@ const demoAchievements: Achievement[] = [
     category: "Automation",
     impactNote: "Shifted a recurring manual task into a repeatable workflow.",
     status: "enhanced",
+    kpiId: 2,
   },
 ];
 
@@ -64,10 +134,10 @@ const demoReport: Report = {
 
 const demoSummary: DashboardSummary = {
   quarter: "2026-Q1",
-  totalKpis: 2,
+  totalKpis: 3,
   totalAchievements: 2,
   enhancedAchievements: 2,
-  mappedAchievements: 1,
+  mappedAchievements: 2,
   draftAchievements: 0,
   pendingJobs: 0,
   kpiProgress: [
@@ -77,7 +147,7 @@ const demoSummary: DashboardSummary = {
       weight: 40,
       achievementCount: 1,
       enhancedCount: 1,
-      progressPercent: 25,
+      progressPercent: 52,
     },
     {
       kpiId: 2,
@@ -85,10 +155,46 @@ const demoSummary: DashboardSummary = {
       weight: 35,
       achievementCount: 1,
       enhancedCount: 1,
-      progressPercent: 25,
+      progressPercent: 42,
     },
   ],
 };
+
+function flattenKPIs(nodes: KPI[]): KPI[] {
+  const output: KPI[] = [];
+  const walk = (items: KPI[]) => {
+    for (const item of items) {
+      output.push(item);
+      if (item.children && item.children.length > 0) {
+        walk(item.children);
+      }
+    }
+  };
+  walk(nodes);
+  return output;
+}
+
+function progressFromKPI(item: KPI): ProgressDraft {
+  return {
+    progressQ1: item.progressQ1,
+    progressQ2: item.progressQ2,
+    progressQ3: item.progressQ3,
+    progressQ4: item.progressQ4,
+  };
+}
+
+function normalizeProgress(value: number): number {
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 100) {
+    return 100;
+  }
+  return value;
+}
 
 export function Dashboard() {
   const [token, setToken] = useState<string>("");
@@ -97,6 +203,7 @@ export function Dashboard() {
   const [quarter, setQuarter] = useState("2026-Q1");
   const [rawText, setRawText] = useState("");
   const [selectedKpiId, setSelectedKpiId] = useState<string>("");
+  const [kpiParentId, setKpiParentId] = useState<string>("");
   const [kpiTitle, setKpiTitle] = useState("");
   const [kpiDescription, setKpiDescription] = useState("");
   const [kpiWeight, setKpiWeight] = useState("25");
@@ -104,10 +211,13 @@ export function Dashboard() {
   const [editingKpiId, setEditingKpiId] = useState<number | null>(null);
   const [editingAchievementId, setEditingAchievementId] = useState<number | null>(null);
   const [kpis, setKpis] = useState<KPI[]>(demoKPIs);
+  const [kpiHierarchy, setKpiHierarchy] = useState<KPI[]>(demoHierarchy);
   const [achievements, setAchievements] = useState<Achievement[]>(demoAchievements);
   const [report, setReport] = useState<Report | null>(demoReport);
   const [summary, setSummary] = useState<DashboardSummary>(demoSummary);
   const [reportFormat, setReportFormat] = useState<ReportFormat>("review");
+  const [progressDrafts, setProgressDrafts] = useState<Record<number, ProgressDraft>>({});
+  const [expandedNodes, setExpandedNodes] = useState<Record<number, boolean>>({});
   const [error, setError] = useState<string>("");
   const [info, setInfo] = useState<string>("Demo data is shown until the API is connected.");
   const [isPending, startTransition] = useTransition();
@@ -116,22 +226,36 @@ export function Dashboard() {
     const saved = window.localStorage.getItem("kpi-journal-token");
     if (saved) {
       setToken(saved);
-      hydrate(saved, quarter);
+      void hydrate(saved, quarter);
     }
   }, [quarter]);
 
+  const allKpis = useMemo(() => flattenKPIs(kpiHierarchy.length > 0 ? kpiHierarchy : kpis), [kpiHierarchy, kpis]);
+
+  const kpiLookup = useMemo(() => {
+    const map = new Map<number, KPI>();
+    for (const item of allKpis) {
+      map.set(item.id, item);
+    }
+    return map;
+  }, [allKpis]);
+
   async function hydrate(currentToken: string, currentQuarter: string) {
     try {
-      const [fetchedKPIs, fetchedAchievements, fetchedSummary] = await Promise.all([
-        apiFetch<KPI[]>(`/kpis?quarter=${currentQuarter}`, undefined, currentToken),
-        apiFetch<Achievement[]>(`/achievements?quarter=${currentQuarter}`, undefined, currentToken),
-        apiFetch<DashboardSummary>(`/dashboard?quarter=${currentQuarter}`, undefined, currentToken),
+      const [fetchedKPIs, fetchedHierarchy, fetchedAchievements, fetchedSummary] = await Promise.all([
+        listKPIs(currentToken, currentQuarter),
+        listKPIHierarchy(currentToken, currentQuarter),
+        listAchievements(currentToken, currentQuarter),
+        getDashboardSummary(currentToken, currentQuarter),
       ]);
-      setKpis(fetchedKPIs);
-      setAchievements(fetchedAchievements);
-      setSummary(fetchedSummary);
+      setKpis(fetchedKPIs ?? []);
+      setKpiHierarchy(fetchedHierarchy ?? []);
+      setAchievements(fetchedAchievements ?? []);
+      setSummary(fetchedSummary ?? demoSummary);
+      setProgressDrafts({});
+
       try {
-        const fetchedReport = await apiFetch<Report>(`/reports/${currentQuarter}`, undefined, currentToken);
+        const fetchedReport = await getReport(currentToken, currentQuarter);
         setReport(fetchedReport);
       } catch (err) {
         if (err instanceof APIError && err.status === 404) {
@@ -140,9 +264,15 @@ export function Dashboard() {
           throw err;
         }
       }
+
       setInfo("Connected to backend API.");
       setError("");
     } catch (err) {
+      setKpis(demoKPIs);
+      setKpiHierarchy(demoHierarchy);
+      setAchievements(demoAchievements);
+      setSummary(demoSummary);
+      setReport(demoReport);
       setInfo("Backend unavailable. Showing seeded demo content.");
       setError(err instanceof Error ? err.message : "Unknown API error");
     }
@@ -167,35 +297,114 @@ export function Dashboard() {
     });
   }
 
-  async function handleAddKPI(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token) {
-      setError("Log in or register before creating KPIs.");
+  async function handleRegister() {
+    if (!email || !password) {
+      setError("Email and password are required.");
       return;
     }
     startTransition(async () => {
       try {
-        const created = await apiFetch<KPI>(
-          "/kpis",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              quarter,
-              title: kpiTitle,
-              description: kpiDescription,
-              weight: Number(kpiWeight) || 0,
-              targetMetric: kpiTargetMetric,
-            }),
-          },
-          token,
-        );
-        setKpis((current) => (editingKpiId ? current.map((item) => (item.id === editingKpiId ? created : item)) : [created, ...current]));
-        resetKpiForm();
+        const data = await apiFetch<AuthResponse>("/auth/register", {
+          method: "POST",
+          body: JSON.stringify({ email, password }),
+        });
+        window.localStorage.setItem("kpi-journal-token", data.token);
+        setToken(data.token);
+        setInfo(`Authenticated as ${data.user.email}.`);
         setError("");
+        await hydrate(data.token, quarter);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Registration failed");
+      }
+    });
+  }
+
+  async function handleAddKPI() {
+    if (!token) {
+      setError("Log in or register before creating KPIs.");
+      return;
+    }
+
+    const weight = Number(kpiWeight) || 0;
+    const parentID = kpiParentId ? Number(kpiParentId) : null;
+
+    startTransition(async () => {
+      try {
+        if (parentID) {
+          await createSubKPI(token, parentID, {
+            title: kpiTitle,
+            description: kpiDescription,
+            weight,
+            targetMetric: kpiTargetMetric,
+          });
+        } else {
+          await createKPI(token, {
+            quarter,
+            title: kpiTitle,
+            description: kpiDescription,
+            weight,
+            targetMetric: kpiTargetMetric,
+            parentKpiId: null,
+          });
+        }
+
+        resetKpiForm();
         setEditingKpiId(null);
+        setError("");
         await hydrate(token, quarter);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not save KPI");
+      }
+    });
+  }
+
+  async function handleUpdateKPI(id: number) {
+    if (!token) {
+      setError("Log in or register before editing KPIs.");
+      return;
+    }
+
+    const current = kpiLookup.get(id);
+    if (!current) {
+      setError("Unable to locate KPI for update.");
+      return;
+    }
+
+    startTransition(async () => {
+      try {
+        await updateKPI(token, id, {
+          quarter,
+          title: kpiTitle,
+          description: kpiDescription,
+          weight: Number(kpiWeight) || 0,
+          targetMetric: kpiTargetMetric,
+          parentKpiId: kpiParentId ? Number(kpiParentId) : null,
+          progressQ1: current.progressQ1,
+          progressQ2: current.progressQ2,
+          progressQ3: current.progressQ3,
+          progressQ4: current.progressQ4,
+        });
+        resetKpiForm();
+        setEditingKpiId(null);
+        setError("");
+        await hydrate(token, quarter);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not update KPI");
+      }
+    });
+  }
+
+  async function handleDeleteKPI(id: number) {
+    if (!token) {
+      setError("Log in or register before deleting KPIs.");
+      return;
+    }
+    startTransition(async () => {
+      try {
+        await deleteKPI(token, id);
+        await hydrate(token, quarter);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not delete KPI");
       }
     });
   }
@@ -208,58 +417,17 @@ export function Dashboard() {
     }
     startTransition(async () => {
       try {
-        const created = await apiFetch<Achievement>(
-          "/achievements",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              quarter,
-              rawText,
-              kpiId: selectedKpiId ? Number(selectedKpiId) : null,
-            }),
-          },
-          token,
-        );
-        setAchievements((current) =>
-          editingAchievementId ? current.map((item) => (item.id === editingAchievementId ? created : item)) : [created, ...current],
-        );
+        await createAchievement(token, {
+          quarter,
+          rawText,
+          kpiId: selectedKpiId ? Number(selectedKpiId) : null,
+        });
         resetAchievementForm();
         setEditingAchievementId(null);
         setError("");
         await hydrate(token, quarter);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not save achievement");
-      }
-    });
-  }
-
-  async function handleUpdateKPI(id: number) {
-    if (!token) {
-      setError("Log in or register before editing KPIs.");
-      return;
-    }
-    startTransition(async () => {
-      try {
-        const updated = await apiFetch<KPI>(
-          `/kpis/${id}`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              quarter,
-              title: kpiTitle,
-              description: kpiDescription,
-              weight: Number(kpiWeight) || 0,
-              targetMetric: kpiTargetMetric,
-            }),
-          },
-          token,
-        );
-        setKpis((current) => current.map((item) => (item.id === id ? updated : item)));
-        resetKpiForm();
-        setEditingKpiId(null);
-        await hydrate(token, quarter);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not update KPI");
       }
     });
   }
@@ -271,24 +439,16 @@ export function Dashboard() {
     }
     startTransition(async () => {
       try {
-        const updated = await apiFetch<Achievement>(
-          `/achievements/${id}`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              quarter,
-              rawText: editingAchievementId === id ? rawText : current.rawText,
-              enhancedText: current.enhancedText,
-              category: current.category,
-              impactNote: current.impactNote,
-              kpiId: selectedKpiId ? Number(selectedKpiId) : null,
-            }),
-          },
-          token,
-        );
-        setAchievements((items) => items.map((item) => (item.id === id ? updated : item)));
-        resetAchievementForm();
+        await updateAchievement(token, id, {
+          quarter,
+          rawText: editingAchievementId === id ? rawText : current.rawText,
+          enhancedText: current.enhancedText,
+          category: current.category,
+          impactNote: current.impactNote,
+          kpiId: selectedKpiId ? Number(selectedKpiId) : null,
+        });
         setEditingAchievementId(null);
+        resetAchievementForm();
         await hydrate(token, quarter);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not update achievement");
@@ -303,50 +463,11 @@ export function Dashboard() {
     }
     startTransition(async () => {
       try {
-        await apiFetch<{ status: string }>(`/achievements/${id}/enhance`, { method: "POST" }, token);
+        await enhanceAchievement(token, id);
         setInfo("Enhancement job queued. Start the Go worker to process it.");
         await hydrate(token, quarter);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not queue enhancement");
-      }
-    });
-  }
-
-  async function handleGenerateReport() {
-    if (!token) {
-      setError("Log in or register before generating reports.");
-      return;
-    }
-    startTransition(async () => {
-      try {
-        const generated = await apiFetch<Report>(
-          "/reports/generate",
-          {
-            method: "POST",
-            body: JSON.stringify({ quarter }),
-          },
-          token,
-        );
-        setReport(generated);
-        setError("");
-        await hydrate(token, quarter);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not generate report");
-      }
-    });
-  }
-
-  async function handleDeleteKPI(id: number) {
-    if (!token) {
-      setError("Log in or register before deleting KPIs.");
-      return;
-    }
-    startTransition(async () => {
-      try {
-        await apiFetch<void>(`/kpis/${id}`, { method: "DELETE" }, token);
-        await hydrate(token, quarter);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not delete KPI");
       }
     });
   }
@@ -358,10 +479,56 @@ export function Dashboard() {
     }
     startTransition(async () => {
       try {
-        await apiFetch<void>(`/achievements/${id}`, { method: "DELETE" }, token);
+        await deleteAchievement(token, id);
         await hydrate(token, quarter);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not delete achievement");
+      }
+    });
+  }
+
+  async function handleGenerateReport() {
+    if (!token) {
+      setError("Log in or register before generating reports.");
+      return;
+    }
+    startTransition(async () => {
+      try {
+        const generated = await generateReport(token, quarter);
+        setReport(generated);
+        setError("");
+        await hydrate(token, quarter);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not generate report");
+      }
+    });
+  }
+
+  async function handleSaveProgress(id: number) {
+    if (!token) {
+      setError("Log in or register before updating progress.");
+      return;
+    }
+
+    const current = kpiLookup.get(id);
+    if (!current) {
+      setError("Unable to locate KPI for progress update.");
+      return;
+    }
+
+    const draft = progressDrafts[id] ?? progressFromKPI(current);
+
+    startTransition(async () => {
+      try {
+        await updateKPIProgress(token, id, draft);
+        setProgressDrafts((state) => {
+          const next = { ...state };
+          delete next[id];
+          return next;
+        });
+        await hydrate(token, quarter);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not update progress");
       }
     });
   }
@@ -386,12 +553,51 @@ export function Dashboard() {
     URL.revokeObjectURL(url);
   }
 
+  function updateProgressDraft(id: number, key: QuarterKey, value: string) {
+    const nextValue = normalizeProgress(Number(value));
+    setProgressDrafts((current) => {
+      const kpi = kpiLookup.get(id);
+      const base =
+        current[id] ??
+        (kpi
+          ? progressFromKPI(kpi)
+          : {
+              progressQ1: 0,
+              progressQ2: 0,
+              progressQ3: 0,
+              progressQ4: 0,
+            });
+      return {
+        ...current,
+        [id]: {
+          ...base,
+          [key]: nextValue,
+        },
+      };
+    });
+  }
+
+  function toggleNode(id: number) {
+    setExpandedNodes((state) => ({
+      ...state,
+      [id]: !(state[id] ?? true),
+    }));
+  }
+
   function startEditKpi(item: KPI) {
     setEditingKpiId(item.id);
     setKpiTitle(item.title);
     setKpiDescription(item.description);
     setKpiWeight(String(item.weight));
     setKpiTargetMetric(item.targetMetric);
+    setKpiParentId(item.parentKpiId ? String(item.parentKpiId) : "");
+  }
+
+  function startSubKpi(parent: KPI) {
+    resetKpiForm();
+    setEditingKpiId(null);
+    setKpiParentId(String(parent.id));
+    setInfo(`Creating sub-KPI under \"${parent.title}\".`);
   }
 
   function startEditAchievement(item: Achievement) {
@@ -405,6 +611,7 @@ export function Dashboard() {
     setKpiDescription("");
     setKpiWeight("25");
     setKpiTargetMetric("");
+    setKpiParentId("");
   }
 
   function resetAchievementForm() {
@@ -413,7 +620,90 @@ export function Dashboard() {
   }
 
   function kpiTitleFor(id?: number | null) {
-    return kpis.find((item) => item.id === id)?.title ?? "Unmapped";
+    if (!id) {
+      return "Unmapped";
+    }
+    return kpiLookup.get(id)?.title ?? "Unknown KPI";
+  }
+
+  function renderHierarchy(nodes: KPI[], depth = 0): ReactNode {
+    return nodes.map((item) => {
+      const hasChildren = (item.children?.length ?? 0) > 0;
+      const isExpanded = expandedNodes[item.id] ?? true;
+      const draft = progressDrafts[item.id] ?? progressFromKPI(item);
+      const depthStyle = { "--depth": depth } as CSSProperties;
+
+      return (
+        <div key={item.id} className="treeNode" style={depthStyle}>
+          <article className="card hierarchyCard">
+            <div className="cardTop">
+              <div className="kpiNodeTitle">
+                {hasChildren ? (
+                  <button type="button" className="treeToggle" onClick={() => toggleNode(item.id)}>
+                    {isExpanded ? "-" : "+"}
+                  </button>
+                ) : (
+                  <span className="treeDot" />
+                )}
+                <strong>{item.title}</strong>
+                {item.parentKpiId ? <span className="kpiBadge child">Sub-KPI</span> : null}
+                {hasChildren ? <span className="kpiBadge parent">Parent</span> : null}
+              </div>
+              <span>{item.annualProgress}% annual</span>
+            </div>
+            <p>{item.description}</p>
+            <small>Target: {item.targetMetric || "Not set"}</small>
+            <small>
+              Weight {item.weight}% • Quarter {item.quarter}
+            </small>
+
+            <div className="quarterGrid">
+              {([
+                ["Q1", "progressQ1"],
+                ["Q2", "progressQ2"],
+                ["Q3", "progressQ3"],
+                ["Q4", "progressQ4"],
+              ] as [string, QuarterKey][]).map(([label, key]) => (
+                <label key={label} className="quarterCell">
+                  <span>{label}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={draft[key]}
+                    onChange={(event) => updateProgressDraft(item.id, key, event.target.value)}
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={draft[key]}
+                    onChange={(event) => updateProgressDraft(item.id, key, event.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className="row">
+              <button type="button" className="ghost" onClick={() => void handleSaveProgress(item.id)}>
+                Save Progress
+              </button>
+              <button type="button" className="ghost" onClick={() => startEditKpi(item)}>
+                Edit
+              </button>
+              <button type="button" className="ghost" onClick={() => startSubKpi(item)}>
+                Add Sub-KPI
+              </button>
+              <button type="button" className="ghost danger" onClick={() => void handleDeleteKPI(item.id)}>
+                Delete
+              </button>
+            </div>
+          </article>
+
+          {hasChildren && isExpanded ? <div className="treeChildren">{renderHierarchy(item.children ?? [], depth + 1)}</div> : null}
+        </div>
+      );
+    });
   }
 
   return (
@@ -434,7 +724,7 @@ export function Dashboard() {
       </section>
 
       <section className="grid two">
-        <form className="panel" onSubmit={(event) => handleAuth(event, "login")}>
+        <form className="panel" onSubmit={(event) => void handleAuth(event, "login")}>
           <h2>Authentication</h2>
           <p>Email + password auth for private multi-user deployments.</p>
           <label>
@@ -447,27 +737,7 @@ export function Dashboard() {
           </label>
           <div className="row">
             <button type="submit">Login</button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() =>
-                startTransition(async () => {
-                  try {
-                    const data = await apiFetch<AuthResponse>("/auth/register", {
-                      method: "POST",
-                      body: JSON.stringify({ email, password }),
-                    });
-                    window.localStorage.setItem("kpi-journal-token", data.token);
-                    setToken(data.token);
-                    setInfo(`Authenticated as ${data.user.email}.`);
-                    setError("");
-                    await hydrate(data.token, quarter);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : "Registration failed");
-                  }
-                })
-              }
-            >
+            <button type="button" className="ghost" onClick={() => void handleRegister()}>
               Register
             </button>
           </div>
@@ -531,25 +801,11 @@ export function Dashboard() {
 
       <section className="panel">
         <div className="sectionHeader">
-          <h2>KPI Progress</h2>
-          <span>{summary.kpiProgress.length} tracked</span>
+          <h2>KPI Hierarchy & Progress</h2>
+          <span>{allKpis.length} nodes</span>
         </div>
-        <div className="stack">
-          {summary.kpiProgress.map((item) => (
-            <article key={item.kpiId} className="card">
-              <div className="cardTop">
-                <strong>{item.title}</strong>
-                <span>{item.progressPercent}%</span>
-              </div>
-              <div className="progressBar">
-                <span style={{ width: `${item.progressPercent}%` }} />
-              </div>
-              <small>
-                {item.achievementCount} achievements, {item.enhancedCount} enhanced, weight {item.weight}%
-              </small>
-            </article>
-          ))}
-        </div>
+        <p>Expand parent KPIs, manage sub-KPIs, and update Q1-Q4 progress in place.</p>
+        <div className="stack treeWrap">{kpiHierarchy.length > 0 ? renderHierarchy(kpiHierarchy) : <p>No KPI targets yet.</p>}</div>
       </section>
 
       <section className="grid two">
@@ -561,7 +817,7 @@ export function Dashboard() {
               void handleUpdateKPI(editingKpiId);
               return;
             }
-            void handleAddKPI(event);
+            void handleAddKPI();
           }}
         >
           <h2>{editingKpiId ? "Edit KPI Target" : "Set KPI Targets"}</h2>
@@ -578,6 +834,19 @@ export function Dashboard() {
               placeholder="Describe the measurable outcome or target."
             />
           </label>
+          <label>
+            Parent KPI
+            <select value={kpiParentId} onChange={(event) => setKpiParentId(event.target.value)}>
+              <option value="">Root KPI (no parent)</option>
+              {allKpis
+                .filter((item) => item.id !== editingKpiId)
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+            </select>
+          </label>
           <div className="gridForm">
             <label>
               Weight %
@@ -589,8 +858,8 @@ export function Dashboard() {
             </label>
           </div>
           <div className="row">
-            <button type="submit">{editingKpiId ? "Save KPI" : "Create KPI"}</button>
-            {editingKpiId ? (
+            <button type="submit">{editingKpiId ? "Save KPI" : kpiParentId ? "Create Sub-KPI" : "Create KPI"}</button>
+            {editingKpiId || kpiParentId ? (
               <button
                 type="button"
                 className="ghost"
@@ -633,7 +902,7 @@ export function Dashboard() {
             KPI tag
             <select value={selectedKpiId} onChange={(event) => setSelectedKpiId(event.target.value)}>
               <option value="">Let AI map this later</option>
-              {kpis.map((item) => (
+              {allKpis.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.title}
                 </option>
@@ -661,26 +930,22 @@ export function Dashboard() {
       <section className="grid two">
         <div className="panel">
           <div className="sectionHeader">
-            <h2>KPI Targets</h2>
-            <span>{kpis.length} total</span>
+            <h2>KPI Progress</h2>
+            <span>{(summary.kpiProgress ?? []).length} tracked</span>
           </div>
           <div className="stack">
-            {kpis.map((item) => (
-              <article key={item.id} className="card">
+            {(summary.kpiProgress ?? []).map((item) => (
+              <article key={item.kpiId} className="card">
                 <div className="cardTop">
                   <strong>{item.title}</strong>
-                  <span>{item.weight}%</span>
+                  <span>{item.progressPercent}%</span>
                 </div>
-                <p>{item.description}</p>
-                <small>{item.targetMetric}</small>
-                <div className="row">
-                  <button type="button" className="ghost" onClick={() => startEditKpi(item)}>
-                    Edit KPI
-                  </button>
-                  <button type="button" className="ghost danger" onClick={() => void handleDeleteKPI(item.id)}>
-                    Delete
-                  </button>
+                <div className="progressBar">
+                  <span style={{ width: `${item.progressPercent}%` }} />
                 </div>
+                <small>
+                  {item.achievementCount} achievements, {item.enhancedCount} enhanced, weight {item.weight}%
+                </small>
               </article>
             ))}
           </div>
@@ -738,12 +1003,7 @@ export function Dashboard() {
         </div>
         <div className="formatTabs">
           {(["review", "notion", "hr"] as ReportFormat[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={reportFormat === item ? "tab active" : "tab"}
-              onClick={() => setReportFormat(item)}
-            >
+            <button key={item} type="button" className={reportFormat === item ? "tab active" : "tab"} onClick={() => setReportFormat(item)}>
               {item}
             </button>
           ))}

@@ -14,7 +14,7 @@ import (
 	"github.com/example/kpi-chaser/internal/config"
 )
 
-type openRouterProvider struct {
+type llmProvider struct {
 	apiKey  string
 	baseURL string
 	model   string
@@ -22,18 +22,18 @@ type openRouterProvider struct {
 }
 
 func NewProvider(cfg config.Config) Provider {
-	if cfg.OpenRouterAPIKey == "" {
+	if cfg.LLMAPIKey == "" {
 		return fallbackProvider{}
 	}
-	return &openRouterProvider{
-		apiKey:  cfg.OpenRouterAPIKey,
-		baseURL: cfg.OpenRouterBaseURL,
-		model:   cfg.OpenRouterModel,
+	return &llmProvider{
+		apiKey:  cfg.LLMAPIKey,
+		baseURL: cfg.LLMBaseURL,
+		model:   cfg.LLMModel,
 		client:  &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-func (p *openRouterProvider) EnhanceAchievement(ctx context.Context, rawText string) (EnhancementResult, error) {
+func (p *llmProvider) EnhanceAchievement(ctx context.Context, rawText string) (EnhancementResult, error) {
 	payload := map[string]any{
 		"model": p.model,
 		"response_format": map[string]any{
@@ -60,7 +60,7 @@ func (p *openRouterProvider) EnhanceAchievement(ctx context.Context, rawText str
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return EnhancementResult{}, fmt.Errorf("openrouter enhance failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return EnhancementResult{}, fmt.Errorf("LLM enhance failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var result struct {
@@ -71,7 +71,7 @@ func (p *openRouterProvider) EnhanceAchievement(ctx context.Context, rawText str
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return EnhancementResult{}, fmt.Errorf("decode openrouter response: %w", err)
+		return EnhancementResult{}, fmt.Errorf("decode LLM response: %w", err)
 	}
 	if len(result.Choices) == 0 {
 		return EnhancementResult{}, fmt.Errorf("no AI response choices")
@@ -84,7 +84,7 @@ func (p *openRouterProvider) EnhanceAchievement(ctx context.Context, rawText str
 	return parsed, nil
 }
 
-func (p *openRouterProvider) MapKPI(ctx context.Context, text string, kpis []KPITarget) (string, error) {
+func (p *llmProvider) MapKPI(ctx context.Context, text string, kpis []KPITarget) (string, error) {
 	options := make([]map[string]string, 0, len(kpis))
 	for _, item := range kpis {
 		options = append(options, map[string]string{
@@ -119,7 +119,7 @@ func (p *openRouterProvider) MapKPI(ctx context.Context, text string, kpis []KPI
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("openrouter KPI mapping failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("LLM KPI mapping failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var result struct {
@@ -130,7 +130,7 @@ func (p *openRouterProvider) MapKPI(ctx context.Context, text string, kpis []KPI
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode openrouter response: %w", err)
+		return "", fmt.Errorf("decode LLM response: %w", err)
 	}
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("no AI response choices")

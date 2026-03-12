@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ func (w *Worker) loop(ctx context.Context) {
 
 		job, err := w.queue.ClaimPending(ctx)
 		if err != nil {
+			log.Printf("claim pending error: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -52,10 +54,13 @@ func (w *Worker) loop(ctx context.Context) {
 			continue
 		}
 
+		log.Printf("processing job id=%d type=%s", job.ID, job.Type)
 		if err := w.handle(ctx, *job); err != nil {
+			log.Printf("job id=%d failed: %v", job.ID, err)
 			_ = w.queue.Fail(ctx, job.ID, err)
 			continue
 		}
+		log.Printf("job id=%d completed", job.ID)
 		_ = w.queue.Complete(ctx, job.ID)
 	}
 }

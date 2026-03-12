@@ -56,12 +56,13 @@ func (s *Service) GetSummary(ctx context.Context, userID int64, quarter string) 
 			k.id,
 			k.title,
 			k.weight,
+			k.annual_progress,
 			COUNT(a.id) AS achievement_count,
 			SUM(CASE WHEN a.enhanced_text <> '' THEN 1 ELSE 0 END) AS enhanced_count
 		FROM kpis k
 		LEFT JOIN achievements a ON a.kpi_id = k.id AND a.user_id = k.user_id AND a.quarter = k.quarter
 		WHERE k.user_id = ? AND k.quarter = ?
-		GROUP BY k.id, k.title, k.weight
+		GROUP BY k.id, k.title, k.weight, k.annual_progress
 		ORDER BY k.weight DESC, k.created_at ASC
 	`, userID, quarter)
 	if err != nil {
@@ -71,14 +72,17 @@ func (s *Service) GetSummary(ctx context.Context, userID int64, quarter string) 
 
 	for rows.Next() {
 		var item KPIProgress
-		if err := rows.Scan(&item.KPIID, &item.Title, &item.Weight, &item.AchievementCount, &item.EnhancedCount); err != nil {
+		var annualProgress int
+		if err := rows.Scan(&item.KPIID, &item.Title, &item.Weight, &annualProgress, &item.AchievementCount, &item.EnhancedCount); err != nil {
 			return Summary{}, err
 		}
-		progress := item.AchievementCount * 25
-		if progress > 100 {
-			progress = 100
+		if annualProgress < 0 {
+			annualProgress = 0
 		}
-		item.ProgressPercent = progress
+		if annualProgress > 100 {
+			annualProgress = 100
+		}
+		item.ProgressPercent = annualProgress
 		summary.KPIProgress = append(summary.KPIProgress, item)
 	}
 

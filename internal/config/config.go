@@ -6,9 +6,9 @@ type Config struct {
 	HTTPAddress       string
 	DatabasePath      string
 	JWTSecret         string
-	OpenRouterAPIKey  string
-	OpenRouterBaseURL string
-	OpenRouterModel   string
+	LLMAPIKey         string
+	LLMBaseURL        string
+	LLMModel          string
 	WorkerConcurrency int
 }
 
@@ -17,9 +17,9 @@ func Load() Config {
 		HTTPAddress:       getEnv("HTTP_ADDRESS", ":8080"),
 		DatabasePath:      getEnv("DATABASE_PATH", "./kpi-journal.db"),
 		JWTSecret:         getEnv("JWT_SECRET", "change-me"),
-		OpenRouterAPIKey:  os.Getenv("OPENROUTER_API_KEY"),
-		OpenRouterBaseURL: getEnv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-		OpenRouterModel:   getEnv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+		LLMAPIKey:         os.Getenv("LLM_API_KEY"),
+		LLMBaseURL:        getEnv("LLM_BASE_URL", "https://api.openai.com/v1"),
+		LLMModel:          getEnv("LLM_MODEL", "gpt-4o-mini"),
 		WorkerConcurrency: 3,
 	}
 }

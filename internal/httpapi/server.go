@@ -52,8 +52,12 @@ func (s *Server) Router() http.Handler {
 		protected.Get("/me", s.handleMe)
 		protected.Get("/dashboard", s.handleDashboard)
 		protected.Get("/kpis", s.handleListKPIs)
+		protected.Get("/kpis/hierarchy", s.handleListKPIsWithHierarchy)
 		protected.Post("/kpis", s.handleCreateKPI)
+		protected.Get("/kpis/{id}/children", s.handleGetKPIChildren)
+		protected.Post("/kpis/{id}/subkpis", s.handleCreateSubKPI)
 		protected.Put("/kpis/{id}", s.handleUpdateKPI)
+		protected.Put("/kpis/{id}/progress", s.handleUpdateKPIProgress)
 		protected.Delete("/kpis/{id}", s.handleDeleteKPI)
 		protected.Get("/achievements", s.handleListAchievements)
 		protected.Post("/achievements", s.handleCreateAchievement)
@@ -128,6 +132,15 @@ func (s *Server) handleListKPIs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) handleListKPIsWithHierarchy(w http.ResponseWriter, r *http.Request) {
+	items, err := s.kpiService.ListWithHierarchy(r.Context(), auth.UserIDFromContext(r.Context()), r.URL.Query().Get("quarter"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (s *Server) handleCreateKPI(w http.ResponseWriter, r *http.Request) {
 	var input kpi.KPI
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -136,6 +149,41 @@ func (s *Server) handleCreateKPI(w http.ResponseWriter, r *http.Request) {
 	}
 	input.UserID = auth.UserIDFromContext(r.Context())
 	item, err := s.kpiService.Create(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleGetKPIChildren(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	items, err := s.kpiService.GetChildren(r.Context(), auth.UserIDFromContext(r.Context()), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleCreateSubKPI(w http.ResponseWriter, r *http.Request) {
+	var input kpi.KPI
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	item, err := s.kpiService.CreateSubKPI(r.Context(), auth.UserIDFromContext(r.Context()), id, input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -157,6 +205,57 @@ func (s *Server) handleUpdateKPI(w http.ResponseWriter, r *http.Request) {
 	input.ID = id
 	input.UserID = auth.UserIDFromContext(r.Context())
 	item, err := s.kpiService.Update(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleUpdateKPIProgress(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var input struct {
+		ProgressQ1 *int `json:"progressQ1"`
+		ProgressQ2 *int `json:"progressQ2"`
+		ProgressQ3 *int `json:"progressQ3"`
+		ProgressQ4 *int `json:"progressQ4"`
+
+		Quarter  string `json:"quarter"`
+		Progress *int   `json:"progress"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// Backward-compatible payload: { "quarter": "Q1", "progress": 50 }.
+	if input.Progress != nil && input.Quarter != "" {
+		switch input.Quarter {
+		case "Q1", "q1":
+			input.ProgressQ1 = input.Progress
+		case "Q2", "q2":
+			input.ProgressQ2 = input.Progress
+		case "Q3", "q3":
+			input.ProgressQ3 = input.Progress
+		case "Q4", "q4":
+			input.ProgressQ4 = input.Progress
+		default:
+			writeError(w, http.StatusBadRequest, errors.New("quarter must be Q1, Q2, Q3, or Q4"))
+			return
+		}
+	}
+
+	item, err := s.kpiService.UpdateProgress(r.Context(), auth.UserIDFromContext(r.Context()), id, kpi.ProgressUpdate{
+		ProgressQ1: input.ProgressQ1,
+		ProgressQ2: input.ProgressQ2,
+		ProgressQ3: input.ProgressQ3,
+		ProgressQ4: input.ProgressQ4,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

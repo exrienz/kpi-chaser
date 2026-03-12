@@ -92,7 +92,8 @@ docker compose up --build
 | `OPENROUTER_API_KEY` | Enables live AI calls | empty |
 | `OPENROUTER_BASE_URL` | OpenRouter-compatible endpoint | `https://openrouter.ai/api/v1` |
 | `OPENROUTER_MODEL` | AI model name | `openai/gpt-4o-mini` |
-| `NEXT_PUBLIC_API_BASE_URL` | Frontend API base URL | `http://localhost:8080` |
+| `NEXT_PUBLIC_API_BASE_URL` | Frontend API base URL (skips proxy when set) | unset |
+| `API_PROXY_TARGET` | Next.js proxy target for `/api/*` | `http://localhost:8080` |
 
 ## Testing and Verification
 
