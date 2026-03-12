@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 type Service struct {
 	db        *sql.DB
 	jwtSecret []byte
+	limiter   *loginLimiter
 }
 
 type User struct {
@@ -30,10 +32,18 @@ type Claims struct {
 }
 
 func NewService(db *sql.DB, secret string) *Service {
-	return &Service{db: db, jwtSecret: []byte(secret)}
+	return &Service{
+		db:        db,
+		jwtSecret: []byte(secret),
+		limiter:   newLoginLimiter(5, 15*time.Minute),
+	}
 }
 
 func (s *Service) Register(ctx context.Context, email, password string) (User, string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || !strings.Contains(email, "@") {
+		return User{}, "", errors.New("valid email is required")
+	}
 	if len(password) < 8 {
 		return User{}, "", errors.New("password must be at least 8 characters")
 	}
@@ -45,18 +55,29 @@ func (s *Service) Register(ctx context.Context, email, password string) (User, s
 
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (email, password_hash) VALUES (?, ?)
-	`, strings.ToLower(strings.TrimSpace(email)), string(hash))
+	`, email, string(hash))
 	if err != nil {
 		return User{}, "", fmt.Errorf("create user: %w", err)
 	}
 
 	id, _ := result.LastInsertId()
-	user := User{ID: id, Email: strings.ToLower(strings.TrimSpace(email)), CreatedAt: time.Now().UTC()}
+	user := User{ID: id, Email: email, CreatedAt: time.Now().UTC()}
 	token, err := s.issueToken(user.ID)
 	return user, token, err
 }
 
-func (s *Service) Login(ctx context.Context, email, password string) (User, string, error) {
+func (s *Service) Login(ctx context.Context, email, password, limiterKey string) (User, string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || password == "" {
+		return User{}, "", errors.New("email and password are required")
+	}
+	if limiterKey == "" {
+		limiterKey = email
+	}
+	if !s.limiter.Allow(limiterKey) {
+		return User{}, "", errors.New("too many failed login attempts, try again later")
+	}
+
 	var user User
 	var passwordHash string
 
@@ -64,18 +85,21 @@ func (s *Service) Login(ctx context.Context, email, password string) (User, stri
 		SELECT id, email, password_hash, created_at
 		FROM users
 		WHERE email = ?
-	`, strings.ToLower(strings.TrimSpace(email))).Scan(&user.ID, &user.Email, &passwordHash, &user.CreatedAt)
+	`, email).Scan(&user.ID, &user.Email, &passwordHash, &user.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			s.limiter.RecordFailure(limiterKey)
 			return User{}, "", errors.New("invalid credentials")
 		}
 		return User{}, "", fmt.Errorf("lookup user: %w", err)
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		s.limiter.RecordFailure(limiterKey)
 		return User{}, "", errors.New("invalid credentials")
 	}
 
+	s.limiter.Reset(limiterKey)
 	token, err := s.issueToken(user.ID)
 	return user, token, err
 }
@@ -91,6 +115,26 @@ func (s *Service) GetUser(ctx context.Context, id int64) (User, error) {
 		return User{}, err
 	}
 	return user, nil
+}
+
+func (s *Service) VerifyPassword(ctx context.Context, userID int64, password string) error {
+	var passwordHash string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT password_hash
+		FROM users
+		WHERE id = ?
+	`, userID).Scan(&passwordHash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("user not found")
+		}
+		return fmt.Errorf("lookup password hash: %w", err)
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		return errors.New("invalid credentials")
+	}
+	return nil
 }
 
 func (s *Service) issueToken(userID int64) (string, error) {
@@ -144,4 +188,60 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 func UserIDFromContext(ctx context.Context) int64 {
 	id, _ := ctx.Value(UserIDKey).(int64)
 	return id
+}
+
+type loginLimiter struct {
+	mu          sync.Mutex
+	maxAttempts int
+	window      time.Duration
+	attempts    map[string]loginAttempt
+}
+
+type loginAttempt struct {
+	count       int
+	blockedUntil time.Time
+}
+
+func newLoginLimiter(maxAttempts int, window time.Duration) *loginLimiter {
+	return &loginLimiter{
+		maxAttempts: maxAttempts,
+		window:      window,
+		attempts:    make(map[string]loginAttempt),
+	}
+}
+
+func (l *loginLimiter) Allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entry, ok := l.attempts[key]
+	if !ok {
+		return true
+	}
+	if !entry.blockedUntil.IsZero() && time.Now().Before(entry.blockedUntil) {
+		return false
+	}
+	if !entry.blockedUntil.IsZero() && time.Now().After(entry.blockedUntil) {
+		delete(l.attempts, key)
+	}
+	return true
+}
+
+func (l *loginLimiter) RecordFailure(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entry := l.attempts[key]
+	entry.count++
+	if entry.count >= l.maxAttempts {
+		entry.blockedUntil = time.Now().Add(l.window)
+		entry.count = 0
+	}
+	l.attempts[key] = entry
+}
+
+func (l *loginLimiter) Reset(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.attempts, key)
 }

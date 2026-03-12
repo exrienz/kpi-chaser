@@ -1,6 +1,6 @@
 {
   "name": "kpi-journal-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test lib/reportFormats.test.ts"
+    "test": "node --experimental-strip-types --test lib/reportFormats.test.ts lib/dashboardData.test.ts"
   },
   "dependencies": {
     "next": "15.2.4",

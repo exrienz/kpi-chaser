@@ -4,8 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -51,6 +54,7 @@ func (s *Server) Router() http.Handler {
 		protected.Use(s.authService.Middleware)
 		protected.Get("/me", s.handleMe)
 		protected.Get("/dashboard", s.handleDashboard)
+		protected.Post("/dashboard/reset", s.handleResetAllProgress)
 		protected.Get("/kpis", s.handleListKPIs)
 		protected.Get("/kpis/hierarchy", s.handleListKPIsWithHierarchy)
 		protected.Post("/kpis", s.handleCreateKPI)
@@ -82,9 +86,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	user, token, err := s.authService.Register(r.Context(), input.Email, input.Password)
 	if err != nil {
+		log.Printf("auth.register.failed email=%q ip=%q error=%q", input.Email, clientIP(r), err)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	log.Printf("auth.register.succeeded user_id=%d email=%q ip=%q", user.ID, user.Email, clientIP(r))
 	writeJSON(w, http.StatusCreated, map[string]any{"user": user, "token": token})
 }
 
@@ -97,11 +103,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	user, token, err := s.authService.Login(r.Context(), input.Email, input.Password)
+	limiterKey := strings.ToLower(strings.TrimSpace(input.Email)) + "|" + clientIP(r)
+	user, token, err := s.authService.Login(r.Context(), input.Email, input.Password, limiterKey)
 	if err != nil {
+		log.Printf("auth.login.failed email=%q ip=%q error=%q", input.Email, clientIP(r), err)
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
+	log.Printf("auth.login.succeeded user_id=%d email=%q ip=%q", user.ID, user.Email, clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]any{"user": user, "token": token})
 }
 
@@ -115,12 +124,57 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	summary, err := s.dashboardService.GetSummary(r.Context(), auth.UserIDFromContext(r.Context()), r.URL.Query().Get("quarter"))
+	userID := auth.UserIDFromContext(r.Context())
+	quarter := r.URL.Query().Get("quarter")
+	log.Printf("dashboard.view user_id=%d quarter=%q", userID, quarter)
+	summary, err := s.dashboardService.GetSummary(r.Context(), userID, quarter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) handleResetAllProgress(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Confirm-Action") != "reset-progress" {
+		writeError(w, http.StatusForbidden, errors.New("missing reset confirmation header"))
+		return
+	}
+
+	var input struct {
+		Password     string `json:"password"`
+		Confirmation string `json:"confirmation"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if input.Confirmation != "RESET" {
+		writeError(w, http.StatusBadRequest, errors.New(`confirmation must be "RESET"`))
+		return
+	}
+
+	userID := auth.UserIDFromContext(r.Context())
+	if err := s.authService.VerifyPassword(r.Context(), userID, input.Password); err != nil {
+		log.Printf("dashboard.reset.denied user_id=%d error=%q", userID, err)
+		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
+
+	result, err := s.dashboardService.ResetAllProgress(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	log.Printf(
+		"dashboard.reset.completed user_id=%d kpis_updated=%d achievements_deleted=%d reports_deleted=%d jobs_deleted=%d",
+		userID,
+		result.KPIsUpdated,
+		result.AchievementsDeleted,
+		result.ReportsDeleted,
+		result.JobsDeleted,
+	)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleListKPIs(w http.ResponseWriter, r *http.Request) {
@@ -365,7 +419,10 @@ func (s *Server) handleGenerateReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
-	report, err := s.reportService.Get(r.Context(), auth.UserIDFromContext(r.Context()), chi.URLParam(r, "quarter"))
+	userID := auth.UserIDFromContext(r.Context())
+	quarter := chi.URLParam(r, "quarter")
+	log.Printf("report.view user_id=%d quarter=%q", userID, quarter)
+	report, err := s.reportService.Get(r.Context(), userID, quarter)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, err)
@@ -375,6 +432,21 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func clientIP(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	host := r.RemoteAddr
+	if addr, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		host = addr.Addr().String()
+	}
+	return host
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -33,6 +33,12 @@ export type Report = {
   body: string;
 };
 
+export type AuthUser = {
+  id: number;
+  email: string;
+  createdAt: string;
+};
+
 export type DashboardSummary = {
   quarter: string;
   totalKpis: number;
@@ -111,6 +117,30 @@ function quarterQuery(quarter: string): string {
 
 export function listKPIs(token: string, quarter: string): Promise<KPI[]> {
   return apiFetch<KPI[]>(`/kpis${quarterQuery(quarter)}`, undefined, token);
+}
+
+export function register(input: { email: string; password: string }): Promise<{ token: string; user: AuthUser }> {
+  return apiFetch<{ token: string; user: AuthUser }>(
+    "/auth/register",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function login(input: { email: string; password: string }): Promise<{ token: string; user: AuthUser }> {
+  return apiFetch<{ token: string; user: AuthUser }>(
+    "/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function getMe(token: string): Promise<AuthUser> {
+  return apiFetch<AuthUser>("/me", undefined, token);
 }
 
 export function listKPIHierarchy(token: string, quarter: string): Promise<KPI[]> {
@@ -227,4 +257,28 @@ export function generateReport(token: string, quarter: string): Promise<Report> 
 
 export function getReport(token: string, quarter: string): Promise<Report> {
   return apiFetch<Report>(`/reports/${encodeURIComponent(quarter)}`, undefined, token);
+}
+
+export function resetAllProgress(token: string, input: { password: string; confirmation: "RESET" }): Promise<{
+  kpisUpdated: number;
+  achievementsDeleted: number;
+  reportsDeleted: number;
+  jobsDeleted: number;
+}> {
+  return apiFetch<{
+    kpisUpdated: number;
+    achievementsDeleted: number;
+    reportsDeleted: number;
+    jobsDeleted: number;
+  }>(
+    "/dashboard/reset",
+    {
+      method: "POST",
+      headers: {
+        "X-Confirm-Action": "reset-progress",
+      },
+      body: JSON.stringify(input),
+    },
+    token,
+  );
 }
